@@ -1128,12 +1128,16 @@
                 mouseDown = !1,
                 mouseX = 0.5,
                 mouseY = 0.5,
+                mouseDownX = 0,
+                mouseDownY = 0,
                 wasMovingInput = !1;
             (canvas.addEventListener('pointerdown', function (e) {
                 ((mouseDown = !0), canvas.setPointerCapture(e.pointerId));
                 var n = canvas.getBoundingClientRect();
                 ((mouseX = (e.clientX - n.left) / n.width),
                     (mouseY = 1 - (e.clientY - n.top) / n.height),
+                    (mouseDownX = mouseX),
+                    (mouseDownY = mouseY),
                     e.preventDefault());
             }),
                 canvas.addEventListener('pointermove', function (e) {
@@ -1362,17 +1366,13 @@
                 ((smoothDt = o), (elapsedTime += o), frameNum++);
                 var t = Math.min(Math.round(5), coneSeeds.length);
                 if (mouseDown) {
-                    for (
-                        var a = screenToWorldX(mouseX),
-                            r = screenToWorldY(mouseY),
-                            l = 0,
-                            i = 0,
-                            c = 0;
-                        c < t;
-                        c++
-                    )
-                        (x = chladniTargets[c]) && ((l += x.ux), (i += x.uy));
-                    shiftAllTargets(a - (l /= t), r - (i /= t));
+                    var a = mouseX - mouseDownX,
+                        r = mouseY - mouseDownY,
+                        l = Math.sqrt(a * a + r * r);
+                    if (l > 0.001) {
+                        var i = l * 0.5;
+                        shiftAllTargets(a / l * i * o, r / l * i * o);
+                    }
                 }
                 var s = 0.075 * ((arrowKeys.right ? 1 : 0) - (arrowKeys.left ? 1 : 0)) * o,
                     f = 0.075 * ((arrowKeys.up ? 1 : 0) - (arrowKeys.down ? 1 : 0)) * o,
