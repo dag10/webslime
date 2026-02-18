@@ -690,7 +690,7 @@
                     var E = Math.pow(0.9, 60 * m);
                     ((s.vx *= E), (s.vy *= E));
                     var S = Math.sqrt(s.vx * s.vx + s.vy * s.vy);
-                    S > 0.1 && ((s.vx = (s.vx / S) * 0.1), (s.vy = (s.vy / S) * 0.1));
+                    S > 0.4 && ((s.vx = (s.vx / S) * 0.4), (s.vy = (s.vy / S) * 0.4));
                     var U = s.px + s.vx * m,
                         y = s.py + s.vy * m,
                         F = 0.225,
@@ -1370,7 +1370,7 @@
                         r = mouseY - mouseDownY,
                         l = Math.sqrt(a * a + r * r);
                     if (l > 0.001) {
-                        var i = l * 0.5;
+                        var i = l * 3.0;
                         shiftAllTargets(a / l * i * o, r / l * i * o);
                     }
                 }
@@ -1430,7 +1430,7 @@
                     y = Math.sqrt(S * S + U * U);
                 if (y > 0.03) {
                     var F = y - 0.03;
-                    ((F = Math.min(F, 0.075 * o)),
+                    ((F = Math.min(F, 0.3 * o)),
                         (scrollX += (S / y) * F),
                         (scrollY += (U / y) * F));
                 }
