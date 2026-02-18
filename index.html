@@ -605,6 +605,7 @@
                 return o;
             }
             function shiftAllTargets(e, n) {
+                // Shift all targets by the same base offset
                 for (var o = 0; o < chladniTargets.length; o++)
                     (chladniTargets[o] &&
                         ((chladniTargets[o].ux += e), (chladniTargets[o].uy += n)),
@@ -612,6 +613,26 @@
                             ((chladniTargetFrom[o].ux += e), (chladniTargetFrom[o].uy += n)),
                         chladniTargetTo[o] &&
                             ((chladniTargetTo[o].ux += e), (chladniTargetTo[o].uy += n)));
+
+                // Velocity-dependent spreading: push targets apart when moving fast
+                var speed = Math.sqrt(e * e + n * n);
+                if (speed > 0.0001 && chladniTargets.length > 1) {
+                    // Movement direction and perpendicular
+                    var dirX = e / speed, dirY = n / speed;
+                    var perpX = -dirY, perpY = dirX;
+                    // Spread strength scales with speed, capped
+                    var spreadStr = Math.min(speed * 1.5, 0.12);
+                    var count = Math.min(Math.round(5), chladniTargets.length);
+                    for (var i = 0; i < count; i++) {
+                        if (!chladniTargets[i]) continue;
+                        // Spread along perpendicular: evenly distribute from -1 to +1
+                        var t = count > 1 ? (i / (count - 1)) * 2 - 1 : 0;
+                        // Also stagger along movement direction (leader/trailer)
+                        var along = ((i % 2 === 0) ? 1 : -1) * 0.6;
+                        chladniTargets[i].ux += perpX * t * spreadStr + dirX * along * spreadStr * 0.5;
+                        chladniTargets[i].uy += perpY * t * spreadStr + dirY * along * spreadStr * 0.5;
+                    }
+                }
             }
             function updateConeWander(e, n) {
                 if (!wanderEnabled) return !1;
@@ -667,14 +688,14 @@
                     }
                 }
                 var p = !1,
-                    h = 5 * coneRad,
+                    h = 8 * coneRad,
                     m = Math.min(e, 0.033);
                 for (r = 0; r < o; r++) {
                     ((s = coneSeeds[r]),
                         (i = chladniTargets[r] || { ux: scrollX + 0.25, uy: scrollY + 0.25 }));
-                    var v = 8 + 80 * n;
+                    var v = 8 + Math.min(80 * n, 20);
                     ((s.vx += (i.ux - s.px) * v * m), (s.vy += (i.uy - s.py) * v * m));
-                    for (var T = 1 * coneRad, x = 0; x < o; x++)
+                    for (var T = 3 * coneRad, x = 0; x < o; x++)
                         if (r !== x) {
                             var b,
                                 D = s.px - coneSeeds[x].px,
@@ -682,15 +703,15 @@
                                 R = Math.sqrt(D * D + w * w);
                             if (R < h && R > 1e-4)
                                 (R < T
-                                    ? ((b = (0.25 * m) / (R * R * R)), (b = Math.min(b, 5 * m)))
-                                    : (b = (0.0125 * (1 - (R - T) / (h - T)) * m) / R),
+                                    ? ((b = (0.8 * m) / (R * R * R)), (b = Math.min(b, 15 * m)))
+                                    : (b = (0.04 * (1 - (R - T) / (h - T)) * m) / R),
                                     (s.vx += (D / R) * b),
                                     (s.vy += (w / R) * b));
                         }
                     var E = Math.pow(0.9, 60 * m);
                     ((s.vx *= E), (s.vy *= E));
                     var S = Math.sqrt(s.vx * s.vx + s.vy * s.vy);
-                    S > 0.1 * maxSpeed && ((s.vx = (s.vx / S) * 0.1 * maxSpeed), (s.vy = (s.vy / S) * 0.1 * maxSpeed));
+                    S > 0.2 * maxSpeed && ((s.vx = (s.vx / S) * 0.2 * maxSpeed), (s.vy = (s.vy / S) * 0.2 * maxSpeed));
                     var U = s.px + s.vx * m,
                         y = s.py + s.vy * m,
                         F = 0.225,
@@ -1190,7 +1211,7 @@
             for (ci = 0; ci < 15; ci++)
                 flowLocs.cones.push(gl.getUniformLocation(flowUpdateProg, 'uCones[' + ci + ']'));
             var thickUpdateFragSrc =
-                    '#version 300 es\n    precision highp float;\n    in vec2 vUV;\n    uniform sampler2D uThick;      // previous thickness\n    uniform sampler2D uFlow;       // flow field for advection\n    uniform vec2 uTexel;           // 1/W, 1/H\n    uniform float uDecay;          // thickness decay (0.95-1.0)\n    uniform float uDiffuse;        // thickness diffusion strength\n    const float uAdvect = 0.0;     // advection strength (disabled — fluid stays in place)\n    uniform vec2 uScrollVel;      // scroll velocity in field UV/s\n    uniform float uDt;            // frame delta time\n    uniform vec2 uScrollOffset;    // scroll position in field UV\n    uniform float uVisHalf;        // half visible window in field UV\n    // Cone emission\n    uniform int uConeCount;\n    uniform vec4 uCones[15];       // xy = UV pos (field space), zw = velocity\n    uniform float uConeRadius;\n    uniform float uConeEmit;       // emission height\n    uniform float uConeFalloff;    // edge falloff exponent (1=Gaussian, <1=mesa, >1=pointy)\n    uniform float uTrailHeight;    // max trail thickness (cones poke through above this)\n    uniform float uTipShape;       // tip exponent: 2=Gaussian(round), 1=sharp, 0.5=cusp, 4=flat-top\n    uniform float uAspectYX;       // H/W for circular cone splats\n    uniform sampler2D uObs;        // obstacle map (R=height, G=matID)\n    out vec4 fragThick;\n\n    // Smooth obstacle strength from height (0=open, 1=solid wall)\n    float wallStr(vec2 fuv) {\n        float h = texture(uObs, fuv).r;\n        return smoothstep(0.0, 0.008, h);\n    }\n\n    void main() {\n        float wall = wallStr(vUV);\n\n        // Semi-Lagrangian advection: trace back along flow to sample previous thickness\n        // Flow field stores normalized direction; scale by scroll speed for actual velocity\n        vec2 fieldUV = vUV;\n        vec2 flow = texture(uFlow, fieldUV).rg;\n        float flowMag = length(flow);\n        // Use scroll velocity magnitude to scale the advection distance\n        float scrollSpeed = length(uScrollVel);\n        vec2 vel = flow * scrollSpeed * uAdvect;\n        vec2 srcUV = fieldUV - vel * uDt;\n        // Blend advected source with current position based on wall strength at source\n        float srcWall = wallStr(srcUV);\n        srcUV = mix(srcUV, fieldUV, srcWall);\n        float thick = texture(uThick, srcUV).r;\n\n        // 4-neighbor wall-aware diffusion\n        vec2 uvE = vUV + vec2(uTexel.x, 0.0);\n        vec2 uvW = vUV - vec2(uTexel.x, 0.0);\n        vec2 uvN = vUV + vec2(0.0, uTexel.y);\n        vec2 uvS = vUV - vec2(0.0, uTexel.y);\n        float wE = 1.0 - wallStr(uvE);\n        float wW = 1.0 - wallStr(uvW);\n        float wN = 1.0 - wallStr(uvN);\n        float wS = 1.0 - wallStr(uvS);\n        float wSum = wE + wW + wN + wS;\n        float avg;\n        if (wSum > 0.0) {\n            avg = (texture(uThick, uvE).r * wE +\n                   texture(uThick, uvW).r * wW +\n                   texture(uThick, uvN).r * wN +\n                   texture(uThick, uvS).r * wS) / wSum;\n        } else {\n            avg = thick;\n        }\n        thick = mix(thick, avg, uDiffuse);\n\n        // Interior spreading: extra diffusion weighted by thickness.\n        // In the flat plateau center, avg ≈ thick, so no effect.\n        // At the plateau edges, lower neighbors pull values down → dome.\n        // Near zero boundary: weight vanishes, so edge position is preserved.\n        float spreadW = smoothstep(uTrailHeight * 0.5, uTrailHeight * 0.8, thick);\n        thick = mix(thick, avg, spreadW);\n\n        // Decay\n        thick *= uDecay;\n\n        // Cap trail height so cones poke through the surface\n        thick = min(thick, uTrailHeight);\n\n        // Cone Gaussian splats using max blend (maintain solid cores)\n        // Also accumulate additive cone field for G channel (RD cone interaction)\n        float coneField = 0.0;\n        float splatR = uConeRadius * 0.5;\n        float sr2 = splatR * splatR;\n        for (int i = 0; i < 15; i++) {\n            if (i >= uConeCount) break;\n            vec2 coneFieldUV = uCones[i].xy;  // already field UV\n            vec2 d = vUV - coneFieldUV;\n            d = d - round(d); // wrap\n            d.y *= uAspectYX;\n            float dist2 = dot(d, d);\n            if (dist2 < sr2 * 16.0) {\n                float rNorm = pow(dist2 / sr2, uTipShape * 0.5);  // (r/σ)^tipShape\n                float g = uConeEmit * exp(-uConeFalloff * rNorm / 2.0);\n                thick = max(thick, g); // R: max blend, not additive\n                coneField += g;        // G: additive sum for cone height field\n            }\n        }\n\n        // Offscreen clearing: only clear near the wrap boundary so trails persist\n        // Trail history preserved from visible edge (uVisHalf) out to 0.4 UV\n        // Fade only in the last 0.1 UV before the wrap seam at 0.5\n        vec2 visCenter = uScrollOffset + uVisHalf;\n        vec2 delta = vUV - visCenter;\n        delta = delta - round(delta);\n        float offDist = length(delta);\n        float wrapFade = smoothstep(0.4, 0.5, offDist);\n        thick *= 1.0 - wrapFade;\n\n        // Wall attenuation AFTER cone emission (so obstacles always win)\n        thick *= 1.0 - wall;\n        // Cone field also fades at walls and offscreen\n        coneField *= (1.0 - wall) * (1.0 - wrapFade);\n\n        fragThick = vec4(thick, coneField, 0.0, 1.0);\n    }',
+                    '#version 300 es\n    precision highp float;\n    in vec2 vUV;\n    uniform sampler2D uThick;      // previous thickness\n    uniform sampler2D uFlow;       // flow field for advection\n    uniform vec2 uTexel;           // 1/W, 1/H\n    uniform float uDecay;          // thickness decay (0.95-1.0)\n    uniform float uDiffuse;        // thickness diffusion strength\n    const float uAdvect = 0.0;     // advection strength (disabled — fluid stays in place)\n    uniform vec2 uScrollVel;      // scroll velocity in field UV/s\n    uniform float uDt;            // frame delta time\n    uniform vec2 uScrollOffset;    // scroll position in field UV\n    uniform float uVisHalf;        // half visible window in field UV\n    // Cone emission\n    uniform int uConeCount;\n    uniform vec4 uCones[15];       // xy = UV pos (field space), zw = velocity\n    uniform float uConeRadius;\n    uniform float uConeEmit;       // emission height\n    uniform float uConeFalloff;    // edge falloff exponent (1=Gaussian, <1=mesa, >1=pointy)\n    uniform float uTrailHeight;    // max trail thickness (cones poke through above this)\n    uniform float uTipShape;       // tip exponent: 2=Gaussian(round), 1=sharp, 0.5=cusp, 4=flat-top\n    uniform float uAspectYX;       // H/W for circular cone splats\n    uniform sampler2D uObs;        // obstacle map (R=height, G=matID)\n    out vec4 fragThick;\n\n    // Smooth obstacle strength from height (0=open, 1=solid wall)\n    float wallStr(vec2 fuv) {\n        float h = texture(uObs, fuv).r;\n        return smoothstep(0.0, 0.008, h);\n    }\n\n    void main() {\n        float wall = wallStr(vUV);\n\n        // Semi-Lagrangian advection: trace back along flow to sample previous thickness\n        // Flow field stores normalized direction; scale by scroll speed for actual velocity\n        vec2 fieldUV = vUV;\n        vec2 flow = texture(uFlow, fieldUV).rg;\n        float flowMag = length(flow);\n        // Use scroll velocity magnitude to scale the advection distance\n        float scrollSpeed = length(uScrollVel);\n        vec2 vel = flow * scrollSpeed * uAdvect;\n        vec2 srcUV = fieldUV - vel * uDt;\n        // Blend advected source with current position based on wall strength at source\n        float srcWall = wallStr(srcUV);\n        srcUV = mix(srcUV, fieldUV, srcWall);\n        float thick = texture(uThick, srcUV).r;\n\n        // 4-neighbor wall-aware diffusion\n        vec2 uvE = vUV + vec2(uTexel.x, 0.0);\n        vec2 uvW = vUV - vec2(uTexel.x, 0.0);\n        vec2 uvN = vUV + vec2(0.0, uTexel.y);\n        vec2 uvS = vUV - vec2(0.0, uTexel.y);\n        float wE = 1.0 - wallStr(uvE);\n        float wW = 1.0 - wallStr(uvW);\n        float wN = 1.0 - wallStr(uvN);\n        float wS = 1.0 - wallStr(uvS);\n        float wSum = wE + wW + wN + wS;\n        float avg;\n        if (wSum > 0.0) {\n            avg = (texture(uThick, uvE).r * wE +\n                   texture(uThick, uvW).r * wW +\n                   texture(uThick, uvN).r * wN +\n                   texture(uThick, uvS).r * wS) / wSum;\n        } else {\n            avg = thick;\n        }\n        thick = mix(thick, avg, uDiffuse);\n\n        // Interior spreading: extra diffusion weighted by thickness.\n        // In the flat plateau center, avg ≈ thick, so no effect.\n        // At the plateau edges, lower neighbors pull values down → dome.\n        // Near zero boundary: weight vanishes, so edge position is preserved.\n        float spreadW = smoothstep(uTrailHeight * 0.5, uTrailHeight * 0.8, thick);\n        thick = mix(thick, avg, spreadW);\n\n        // Decay\n        thick *= uDecay;\n\n        // Cap trail height so cones poke through the surface\n        thick = min(thick, uTrailHeight);\n\n        // Cone Gaussian splats using max blend (maintain solid cores)\n        // Also accumulate additive cone field for G channel (RD cone interaction)\n        float coneField = 0.0;\n        float splatR = uConeRadius * 0.5;\n        float sr2 = splatR * splatR;\n        float topCone = 0.0;\n        float secondCone = 0.0;\n        for (int i = 0; i < 15; i++) {\n            if (i >= uConeCount) break;\n            vec2 coneFieldUV = uCones[i].xy;  // already field UV\n            vec2 d = vUV - coneFieldUV;\n            d = d - round(d); // wrap\n            d.y *= uAspectYX;\n            float dist2 = dot(d, d);\n            if (dist2 < sr2 * 16.0) {\n                float rNorm = pow(dist2 / sr2, uTipShape * 0.5);  // (r/σ)^tipShape\n                float g = uConeEmit * exp(-uConeFalloff * rNorm / 2.0);\n                thick = max(thick, g); // R: max blend, not additive\n                coneField += g;        // G: additive sum for cone height field\n                if (g > topCone) { secondCone = topCone; topCone = g; }\n                else if (g > secondCone) { secondCone = g; }\n            }\n        }\n        // Valley between overlapping cones: reduce thickness where two cones are similar strength\n        if (secondCone > 0.01) {\n            float valleyRatio = secondCone / max(topCone, 0.001);\n            float valleyStr = smoothstep(0.3, 0.8, valleyRatio) * 0.45;\n            thick *= 1.0 - valleyStr;\n        }\n\n        // Offscreen clearing: only clear near the wrap boundary so trails persist\n        // Trail history preserved from visible edge (uVisHalf) out to 0.4 UV\n        // Fade only in the last 0.1 UV before the wrap seam at 0.5\n        vec2 visCenter = uScrollOffset + uVisHalf;\n        vec2 delta = vUV - visCenter;\n        delta = delta - round(delta);\n        float offDist = length(delta);\n        float wrapFade = smoothstep(0.4, 0.5, offDist);\n        thick *= 1.0 - wrapFade;\n\n        // Wall attenuation AFTER cone emission (so obstacles always win)\n        thick *= 1.0 - wall;\n        // Cone field also fades at walls and offscreen\n        coneField *= (1.0 - wall) * (1.0 - wrapFade);\n\n        fragThick = vec4(thick, coneField, 0.0, 1.0);\n    }',
                 thickUpdateProg = linkProg(vertSrc, thickUpdateFragSrc),
                 thickLocs = {
                     thick: gl.getUniformLocation(thickUpdateProg, 'uThick'),
@@ -1372,7 +1393,7 @@
                         r = mouseY - mouseDownY,
                         l = Math.sqrt(a * a + r * r);
                     if (l > 0.001) {
-                        var i = l * 3.0 * maxSpeed;
+                        var i = l * 1.5 * maxSpeed;
                         shiftAllTargets(a / l * i * o, r / l * i * o);
                     }
                 }
@@ -1439,6 +1460,16 @@
                 var A = (scrollX - R) / Math.max(o, 0.001),
                     L = (scrollY - E) / Math.max(o, 0.001);
                 (buildCellData(), updateConeWander(o, Math.sqrt(A * A + L * L)));
+                // Debug: log cone positions during drag (every 30 frames)
+                if (mouseDown && frameNum % 30 === 0) {
+                    var _dbgPos = [];
+                    for (var _di = 0; _di < t; _di++) {
+                        var _dc = coneSeeds[_di];
+                        _dbgPos.push('c' + _di + ':(' + _dc.px.toFixed(3) + ',' + _dc.py.toFixed(3) +
+                            ' v:' + Math.sqrt(_dc.vx*_dc.vx + _dc.vy*_dc.vy).toFixed(3) + ')');
+                    }
+                    console.log('[blob-debug] f=' + frameNum + ' ' + _dbgPos.join(' '));
+                }
                 var P = 0.5 * coneRad * 1,
                     C = [];
                 for (c = 0; c < t; c++) {
