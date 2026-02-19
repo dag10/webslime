@@ -1193,13 +1193,17 @@
                 prevMouseX = 0.5,
                 prevMouseY = 0.5,
                 flingTimer = 0,
+                explosionTimer = 0,
+                explosionCenterX = 0.5,
+                explosionCenterY = 0.5,
+                EXPLOSION_FLOW_DURATION = 0.5,
                 VORTEX_STILL_THRESH = 0.005,
                 VORTEX_RAMP_TIME = 0.3,
                 VORTEX_MAX_OMEGA = 14.0,
-                VORTEX_MIN_RADIUS = 0.018,
-                VORTEX_MAX_RADIUS = 0.07,
-                VORTEX_FLING_DURATION = 0.6,
-                VORTEX_FLING_BOOST = 3.0,
+                VORTEX_MIN_RADIUS = 0.04,
+                VORTEX_MAX_RADIUS = 0.10,
+                VORTEX_FLING_DURATION = 0.8,
+                VORTEX_FLING_BOOST = 4.0,
                 // Heartbeat pulse state
                 heartPhase = 0,
                 heartRate = 0.8,
@@ -1324,7 +1328,7 @@
                         'ArrowDown' === e.key && (arrowKeys.down = !1));
                 }));
             var flowUpdateFragSrc =
-                    '#version 300 es\n    precision highp float;\n    in vec2 vUV;\n    uniform sampler2D uFlow;\n    uniform vec2 uTexel;       // 1/W, 1/H\n    const float uDecay = 1.0;\n    uniform float uDiffuse;\n    uniform vec2 uScrollOffset; // current scroll in UV\n    uniform float uVisHalf;    // half visible window in field UV (0.25 for 2x field)\n    uniform vec2 uAspect;      // (1.0, W/H) for aspect-ratio corrected eraser arc\n    uniform float uAspectYX;   // H/W for circular cone splats\n    uniform vec2 uScrollVel;   // scroll velocity in field UV/s (zero when idle)\n    // Cone splats\n    uniform int uConeCount;\n    uniform vec4 uCones[15];   // xy = UV position (field space), zw = velocity\n    uniform float uConeRadius;\n    uniform float uConeSquash[15];\n    uniform float uSplatScale;\n    uniform float uMaxSpeed;\n    uniform sampler2D uObs;  // obstacle map (R=height, G=matID)\n    uniform vec2 uVortexPos;\n    uniform float uVortexStr;\n    uniform vec2 uHeartCenter;  // blob center in field UV\n    uniform float uHeartFlow;   // radial flow burst strength (0-1)\n    uniform vec2 uHoverPos;\n    uniform float uHoverStr;\n    uniform vec2 uHoverVel;\n    out vec4 fragFlow;\n\n    // Smooth obstacle strength from height (0=open, 1=solid wall)\n    float wallStr(vec2 fuv) {\n        float h = texture(uObs, fuv).r;\n        return smoothstep(0.0, 0.008, h);  // smooth transition over height falloff\n    }\n\n    void main() {\n        float wall = wallStr(vUV);\n\n        vec2 flow = texture(uFlow, vUV).rg;\n\n        // Offscreen distance factor (used for diffusion boost and eraser)\n        vec2 visCenter = uScrollOffset + uVisHalf;\n        vec2 delta = vUV - visCenter;\n        delta = delta - round(delta); // wrap to [-0.5, 0.5]\n        float offDist = length(delta);\n        float offT = clamp((offDist - uVisHalf) / (0.5 - uVisHalf), 0.0, 1.0);\n\n        // 4-neighbor wall-aware diffusion (boosted offscreen for natural blur of old trails)\n        vec2 uvE = vUV + vec2(uTexel.x, 0.0);\n        vec2 uvW = vUV - vec2(uTexel.x, 0.0);\n        vec2 uvN = vUV + vec2(0.0, uTexel.y);\n        vec2 uvS = vUV - vec2(0.0, uTexel.y);\n        float wE = 1.0 - wallStr(uvE);\n        float wW = 1.0 - wallStr(uvW);\n        float wN = 1.0 - wallStr(uvN);\n        float wS = 1.0 - wallStr(uvS);\n        float wSum = wE + wW + wN + wS;\n        vec2 avg;\n        if (wSum > 0.0) {\n            avg = (texture(uFlow, uvE).rg * wE +\n                   texture(uFlow, uvW).rg * wW +\n                   texture(uFlow, uvN).rg * wN +\n                   texture(uFlow, uvS).rg * wS) / wSum;\n        } else {\n            avg = flow;\n        }\n        flow = mix(flow, avg, uDiffuse + offT * 0.3);\n\n        // Decay\n        flow *= uDecay;\n\n        // Cone splats: paint velocity direction onto field (mix = overwrite with edge bleed)\n        // uConeRadius is in window UV; field is 2x window, so * 0.25 makes\n        // the visible trail (~2 sigma on screen) match the debug circle diameter\n        for (int i = 0; i < 15; i++) {\n            if (i >= uConeCount) break;\n            float sq = uConeSquash[i];\n            float localRadius = uConeRadius / sqrt(max(1.0 - sq, 0.35));\n            float splatR = localRadius * 0.25 * uSplatScale;\n            float sr2 = splatR * splatR;\n            vec2 coneFieldUV = uCones[i].xy;  // already field UV\n            vec2 coneVel = uCones[i].zw;\n            float speed = length(coneVel);\n            if (speed < 0.0001) continue;\n            vec2 dir = coneVel / speed;\n            vec2 d = vUV - coneFieldUV;\n            d = d - round(d);\n            d.y *= uAspectYX;\n            float dist2 = dot(d, d);\n            if (dist2 < sr2 * 9.0) {\n                float g = exp(-dist2 / (2.0 * sr2));\n                flow = mix(flow, dir, g * min(speed * 10.0 / uMaxSpeed, 1.0));\n            }\n        }\n\n        // Vortex flow splat: tangential flow around vortex center\n        if (uVortexStr > 0.001) {\n            vec2 vd = vUV - uVortexPos;\n            vd = vd - round(vd);\n            vd.y *= uAspectYX;\n            float vDist = length(vd);\n            vec2 tangent = vec2(-vd.y, vd.x);\n            float tLen = length(tangent);\n            if (tLen > 0.0001) {\n                tangent /= tLen;\n                float vortexR = uConeRadius * 3.0;\n                float vr2 = vortexR * vortexR;\n                float g = exp(-vDist * vDist / (2.0 * vr2));\n                vec2 radial = -vd / max(vDist, 0.0001);\n                vec2 spiralDir = tangent * 0.9 + radial * 0.1;\n                spiralDir = normalize(spiralDir);\n                flow = mix(flow, spiralDir, g * uVortexStr);\n            }\n        }\n\n        // Offscreen clearing: directional eraser arc, only active when moving\n        // Reuses delta and offDist/offT computed above\n        float scrollSpeed = length(uScrollVel);\n        if (scrollSpeed > 0.0001) {\n            float t = offT;\n\n            // Direction: trailing hemisphere behind movement direction (±90°)\n            // Compute angle in aspect-corrected space so degrees match screen appearance\n            // Full strength within ±60°, ramp to zero by ±90°\n            vec2 aspDelta = delta * uAspect;\n            vec2 aspMoveDir = normalize(uScrollVel * uAspect);\n            float aspDist = length(aspDelta);\n            float d = (aspDist > 0.0001) ? dot(aspDelta / aspDist, aspMoveDir) : 0.0;\n            // negD = cos(angle from behind): 1.0 = directly behind, 0.0 = perpendicular\n            float negD = -d;\n            // smoothstep: 0 at ±90° (perpendicular), ramp 90°→60°, 1 within ±60°\n            float angleFactor = smoothstep(0.0, 0.5, negD);\n\n            // Combined: linear distance fade * angle modulation\n            float maxMag = 1.0 - angleFactor * t;\n            float mag = length(flow);\n            if (mag > maxMag) flow = (mag > 0.0001) ? flow / mag * maxMag : vec2(0.0);\n        }\n\n        // Heartbeat radial flow pulse: emanates outward from blob center\n        if (uHeartFlow > 0.001) {\n            vec2 hd = vUV - uHeartCenter;\n            hd = hd - round(hd);\n            hd.y *= uAspectYX;\n            float hDist = length(hd);\n            // Gaussian falloff centered on blob, wide enough to cover the fluid\n            float heartR = uConeRadius * 6.0;\n            float hg = exp(-hDist * hDist / (2.0 * heartR * heartR));\n            // Radial outward direction\n            if (hDist > 0.0001) {\n                vec2 radial = hd / hDist;\n                flow = mix(flow, radial, hg * uHeartFlow * 0.4);\n            }\n        }\n\n        // Cursor hover: gentle radial flow disturbance\n        if (uHoverStr > 0.001) {\n            vec2 hd = vUV - uHoverPos;\n            hd = hd - round(hd);\n            hd.y *= uAspectYX;\n            float hDist = length(hd);\n            float hoverR = uConeRadius * 4.0;\n            float hg = exp(-hDist * hDist / (2.0 * hoverR * hoverR));\n            if (hDist > 0.0001) {\n                vec2 radial = hd / hDist;\n                vec2 velDir = uHoverVel;\n                float velMag = length(velDir);\n                vec2 hoverFlow = radial;\n                if (velMag > 0.5) {\n                    velDir /= velMag;\n                    float velBlend = min(velMag / 5.0, 0.7);\n                    hoverFlow = mix(radial, velDir, velBlend);\n                    hoverFlow = normalize(hoverFlow);\n                }\n                flow = mix(flow, hoverFlow, hg * uHoverStr * 0.3);\n            }\n        }\n\n        // Wall attenuation AFTER cone splats (so obstacles always win)\n        flow *= 1.0 - wall;\n\n        fragFlow = vec4(flow, 0.0, 1.0);\n    }',
+                    '#version 300 es\n    precision highp float;\n    in vec2 vUV;\n    uniform sampler2D uFlow;\n    uniform vec2 uTexel;       // 1/W, 1/H\n    const float uDecay = 1.0;\n    uniform float uDiffuse;\n    uniform vec2 uScrollOffset; // current scroll in UV\n    uniform float uVisHalf;    // half visible window in field UV (0.25 for 2x field)\n    uniform vec2 uAspect;      // (1.0, W/H) for aspect-ratio corrected eraser arc\n    uniform float uAspectYX;   // H/W for circular cone splats\n    uniform vec2 uScrollVel;   // scroll velocity in field UV/s (zero when idle)\n    // Cone splats\n    uniform int uConeCount;\n    uniform vec4 uCones[15];   // xy = UV position (field space), zw = velocity\n    uniform float uConeRadius;\n    uniform float uConeSquash[15];\n    uniform float uSplatScale;\n    uniform float uMaxSpeed;\n    uniform sampler2D uObs;  // obstacle map (R=height, G=matID)\n    uniform vec2 uVortexPos;\n    uniform float uVortexStr;\n    uniform vec2 uHeartCenter;  // blob center in field UV\n    uniform float uHeartFlow;   // radial flow burst strength (0-1)\n    uniform vec2 uHoverPos;\n    uniform float uHoverStr;\n    uniform vec2 uHoverVel;\n    uniform vec2 uExplosionPos;\n    uniform float uExplosionStr;\n    out vec4 fragFlow;\n\n    // Smooth obstacle strength from height (0=open, 1=solid wall)\n    float wallStr(vec2 fuv) {\n        float h = texture(uObs, fuv).r;\n        return smoothstep(0.0, 0.008, h);  // smooth transition over height falloff\n    }\n\n    void main() {\n        float wall = wallStr(vUV);\n\n        vec2 flow = texture(uFlow, vUV).rg;\n\n        // Offscreen distance factor (used for diffusion boost and eraser)\n        vec2 visCenter = uScrollOffset + uVisHalf;\n        vec2 delta = vUV - visCenter;\n        delta = delta - round(delta); // wrap to [-0.5, 0.5]\n        float offDist = length(delta);\n        float offT = clamp((offDist - uVisHalf) / (0.5 - uVisHalf), 0.0, 1.0);\n\n        // 4-neighbor wall-aware diffusion (boosted offscreen for natural blur of old trails)\n        vec2 uvE = vUV + vec2(uTexel.x, 0.0);\n        vec2 uvW = vUV - vec2(uTexel.x, 0.0);\n        vec2 uvN = vUV + vec2(0.0, uTexel.y);\n        vec2 uvS = vUV - vec2(0.0, uTexel.y);\n        float wE = 1.0 - wallStr(uvE);\n        float wW = 1.0 - wallStr(uvW);\n        float wN = 1.0 - wallStr(uvN);\n        float wS = 1.0 - wallStr(uvS);\n        float wSum = wE + wW + wN + wS;\n        vec2 avg;\n        if (wSum > 0.0) {\n            avg = (texture(uFlow, uvE).rg * wE +\n                   texture(uFlow, uvW).rg * wW +\n                   texture(uFlow, uvN).rg * wN +\n                   texture(uFlow, uvS).rg * wS) / wSum;\n        } else {\n            avg = flow;\n        }\n        flow = mix(flow, avg, uDiffuse + offT * 0.3);\n\n        // Decay\n        flow *= uDecay;\n\n        // Cone splats: paint velocity direction onto field (mix = overwrite with edge bleed)\n        // uConeRadius is in window UV; field is 2x window, so * 0.25 makes\n        // the visible trail (~2 sigma on screen) match the debug circle diameter\n        for (int i = 0; i < 15; i++) {\n            if (i >= uConeCount) break;\n            float sq = uConeSquash[i];\n            float localRadius = uConeRadius / sqrt(max(1.0 - sq, 0.35));\n            float splatR = localRadius * 0.25 * uSplatScale;\n            float sr2 = splatR * splatR;\n            vec2 coneFieldUV = uCones[i].xy;  // already field UV\n            vec2 coneVel = uCones[i].zw;\n            float speed = length(coneVel);\n            if (speed < 0.0001) continue;\n            vec2 dir = coneVel / speed;\n            vec2 d = vUV - coneFieldUV;\n            d = d - round(d);\n            d.y *= uAspectYX;\n            float dist2 = dot(d, d);\n            if (dist2 < sr2 * 9.0) {\n                float g = exp(-dist2 / (2.0 * sr2));\n                flow = mix(flow, dir, g * min(speed * 10.0 / uMaxSpeed, 1.0));\n            }\n        }\n\n        // Vortex flow splat: tangential flow around vortex center\n        if (uVortexStr > 0.001) {\n            vec2 vd = vUV - uVortexPos;\n            vd = vd - round(vd);\n            vd.y *= uAspectYX;\n            float vDist = length(vd);\n            vec2 tangent = vec2(-vd.y, vd.x);\n            float tLen = length(tangent);\n            if (tLen > 0.0001) {\n                tangent /= tLen;\n                float vortexR = uConeRadius * 3.0;\n                float vr2 = vortexR * vortexR;\n                float g = exp(-vDist * vDist / (2.0 * vr2));\n                vec2 radial = -vd / max(vDist, 0.0001);\n                vec2 spiralDir = tangent * 0.9 + radial * 0.1;\n                spiralDir = normalize(spiralDir);\n                flow = mix(flow, spiralDir, g * uVortexStr);\n            }\n        }\n\n        // Offscreen clearing: directional eraser arc, only active when moving\n        // Reuses delta and offDist/offT computed above\n        float scrollSpeed = length(uScrollVel);\n        if (scrollSpeed > 0.0001) {\n            float t = offT;\n\n            // Direction: trailing hemisphere behind movement direction (±90°)\n            // Compute angle in aspect-corrected space so degrees match screen appearance\n            // Full strength within ±60°, ramp to zero by ±90°\n            vec2 aspDelta = delta * uAspect;\n            vec2 aspMoveDir = normalize(uScrollVel * uAspect);\n            float aspDist = length(aspDelta);\n            float d = (aspDist > 0.0001) ? dot(aspDelta / aspDist, aspMoveDir) : 0.0;\n            // negD = cos(angle from behind): 1.0 = directly behind, 0.0 = perpendicular\n            float negD = -d;\n            // smoothstep: 0 at ±90° (perpendicular), ramp 90°→60°, 1 within ±60°\n            float angleFactor = smoothstep(0.0, 0.5, negD);\n\n            // Combined: linear distance fade * angle modulation\n            float maxMag = 1.0 - angleFactor * t;\n            float mag = length(flow);\n            if (mag > maxMag) flow = (mag > 0.0001) ? flow / mag * maxMag : vec2(0.0);\n        }\n\n        // Heartbeat radial flow pulse: emanates outward from blob center\n        if (uHeartFlow > 0.001) {\n            vec2 hd = vUV - uHeartCenter;\n            hd = hd - round(hd);\n            hd.y *= uAspectYX;\n            float hDist = length(hd);\n            // Gaussian falloff centered on blob, wide enough to cover the fluid\n            float heartR = uConeRadius * 6.0;\n            float hg = exp(-hDist * hDist / (2.0 * heartR * heartR));\n            // Radial outward direction\n            if (hDist > 0.0001) {\n                vec2 radial = hd / hDist;\n                flow = mix(flow, radial, hg * uHeartFlow * 0.4);\n            }\n        }\n\n        // Explosion radial outward flow burst\n        if (uExplosionStr > 0.001) {\n            vec2 ed = vUV - uExplosionPos;\n            ed = ed - round(ed);\n            ed.y *= uAspectYX;\n            float eDist = length(ed);\n            if (eDist > 0.0001) {\n                vec2 radial = ed / eDist;\n                float explosionR = uConeRadius * 5.0;\n                float er2 = explosionR * explosionR;\n                float g = exp(-eDist * eDist / (2.0 * er2));\n                flow = mix(flow, radial, g * uExplosionStr);\n            }\n        }\n\n        // Cursor hover: gentle radial flow disturbance\n        if (uHoverStr > 0.001) {\n            vec2 hd = vUV - uHoverPos;\n            hd = hd - round(hd);\n            hd.y *= uAspectYX;\n            float hDist = length(hd);\n            float hoverR = uConeRadius * 4.0;\n            float hg = exp(-hDist * hDist / (2.0 * hoverR * hoverR));\n            if (hDist > 0.0001) {\n                vec2 radial = hd / hDist;\n                vec2 velDir = uHoverVel;\n                float velMag = length(velDir);\n                vec2 hoverFlow = radial;\n                if (velMag > 0.5) {\n                    velDir /= velMag;\n                    float velBlend = min(velMag / 5.0, 0.7);\n                    hoverFlow = mix(radial, velDir, velBlend);\n                    hoverFlow = normalize(hoverFlow);\n                }\n                flow = mix(flow, hoverFlow, hg * uHoverStr * 0.3);\n            }\n        }\n\n        // Wall attenuation AFTER cone splats (so obstacles always win)\n        flow *= 1.0 - wall;\n\n        fragFlow = vec4(flow, 0.0, 1.0);\n    }',
                 flowUpdateProg = linkProg(vertSrc, flowUpdateFragSrc),
                 flowLocs = {
                     flow: gl.getUniformLocation(flowUpdateProg, 'uFlow'),
@@ -1343,6 +1347,8 @@
                     obs: gl.getUniformLocation(flowUpdateProg, 'uObs'),
                     vortexPos: gl.getUniformLocation(flowUpdateProg, 'uVortexPos'),
                     vortexStr: gl.getUniformLocation(flowUpdateProg, 'uVortexStr'),
+                    explosionPos: gl.getUniformLocation(flowUpdateProg, 'uExplosionPos'),
+                    explosionStr: gl.getUniformLocation(flowUpdateProg, 'uExplosionStr'),
                     heartCenter: gl.getUniformLocation(flowUpdateProg, 'uHeartCenter'),
                     heartFlow: gl.getUniformLocation(flowUpdateProg, 'uHeartFlow'),
                     hoverPos: gl.getUniformLocation(flowUpdateProg, 'uHoverPos'),
@@ -1623,7 +1629,10 @@
 
                         vortexOmega = VORTEX_MAX_OMEGA * vRampSmooth;
 
-                        var vRadius = VORTEX_MAX_RADIUS - (VORTEX_MAX_RADIUS - VORTEX_MIN_RADIUS) * vRampSmooth;
+                        // Radius contracts slowly (6x ramp time = 1.8s to reach min)
+                        var radiusRamp = Math.min((vortexTime - VORTEX_RAMP_TIME) / (VORTEX_RAMP_TIME * 6), 1);
+                        var radiusRampSmooth = radiusRamp * radiusRamp * (3 - 2 * radiusRamp);
+                        var vRadius = VORTEX_MAX_RADIUS - (VORTEX_MAX_RADIUS - VORTEX_MIN_RADIUS) * radiusRampSmooth;
 
                         vortexAngle += vortexOmega * o;
 
@@ -1654,6 +1663,9 @@
                     if (flingTimer > 0) {
                         flingTimer -= o;
                     }
+                    if (explosionTimer > 0) {
+                        explosionTimer -= o;
+                    }
                     vortexTime = Math.max(0, vortexTime - o * 5);
                     vortexOmega = 0;
                 }
@@ -1668,8 +1680,14 @@
                         fissionMergeT = 0;
                     }
                     if (vortexTime > VORTEX_RAMP_TIME) {
-                        // FLING: apply tangential velocity boost to each cone
+                        // EXPLOSION: apply radial outward velocity boost to each cone
                         flingTimer = VORTEX_FLING_DURATION;
+                        explosionTimer = EXPLOSION_FLOW_DURATION;
+                        explosionCenterX = vortexCenterX;
+                        explosionCenterY = vortexCenterY;
+                        // Spawn visual shockwave ring at vortex center
+                        tapRings.push({ fx: vortexCenterX, fy: vortexCenterY, age: 0 });
+                        if (tapRings.length > TAP_RING_MAX) tapRings.shift();
                         var coneCount = Math.min(Math.round(5), coneSeeds.length);
                         for (var fi = 0; fi < coneCount; fi++) {
                             var cone = coneSeeds[fi];
@@ -1677,13 +1695,24 @@
                             var ry = cone.py - vortexCenterY;
                             var rLen = Math.sqrt(rx * rx + ry * ry);
                             if (rLen > 0.0001) {
+                                // Radial outward direction
+                                var radX = rx / rLen;
+                                var radY = ry / rLen;
+                                // Tangential direction (for visual spin)
                                 var sign = vortexOmega >= 0 ? 1 : -1;
                                 var tangX = -ry / rLen * sign;
                                 var tangY = rx / rLen * sign;
-                                var flingSpeed = Math.abs(vortexOmega) * rLen * VORTEX_FLING_BOOST;
-                                flingSpeed = Math.min(flingSpeed, 0.4 * maxSpeed);
-                                cone.vx += tangX * flingSpeed;
-                                cone.vy += tangY * flingSpeed;
+                                // Mix: 75% radial outward, 25% tangential
+                                var explodeX = radX * 0.75 + tangX * 0.25;
+                                var explodeY = radY * 0.75 + tangY * 0.25;
+                                // Normalize the mixed direction
+                                var elen = Math.sqrt(explodeX * explodeX + explodeY * explodeY);
+                                if (elen > 0.0001) { explodeX /= elen; explodeY /= elen; }
+                                // Speed based on omega and stronger boost
+                                var flingSpeed = Math.abs(vortexOmega) * Math.max(rLen, VORTEX_MIN_RADIUS) * VORTEX_FLING_BOOST;
+                                flingSpeed = Math.min(flingSpeed, 0.5 * maxSpeed);
+                                cone.vx += explodeX * flingSpeed;
+                                cone.vy += explodeY * flingSpeed;
                             }
                         }
                         // Set targets to current cone positions (don't fight the fling)
@@ -2027,6 +2056,11 @@
                     Math.min((vortexTime - VORTEX_RAMP_TIME) / VORTEX_RAMP_TIME, 1) * 0.8 : 0;
                 gl.uniform2f(flowLocs.vortexPos, vortexCenterX, vortexCenterY);
                 gl.uniform1f(flowLocs.vortexStr, vortexStr);
+                // Explosion flow uniforms
+                var explosionStr = explosionTimer > 0 ?
+                    Math.pow(explosionTimer / EXPLOSION_FLOW_DURATION, 2) * 0.9 : 0;
+                gl.uniform2f(flowLocs.explosionPos, explosionCenterX, explosionCenterY);
+                gl.uniform1f(flowLocs.explosionStr, explosionStr);
                 // Heartbeat radial flow pulse
                 var heartFlowStr = heartPulsePositive * heartPulsePositive * heartAmplitude * 8.0;
                 gl.uniform2f(flowLocs.heartCenter, smoothComX, smoothComY);
@@ -2325,6 +2359,8 @@
                             gl.uniform2f(flowLocs.scrollVel, 0, 0),
                             gl.uniform2f(flowLocs.vortexPos, 0.5, 0.5),
                             gl.uniform1f(flowLocs.vortexStr, 0),
+                            gl.uniform2f(flowLocs.explosionPos, 0.5, 0.5),
+                            gl.uniform1f(flowLocs.explosionStr, 0),
                             gl.uniform2f(flowLocs.hoverPos, 0.5, 0.5),
                             gl.uniform1f(flowLocs.hoverStr, 0),
                             gl.uniform2f(flowLocs.hoverVel, 0, 0),
