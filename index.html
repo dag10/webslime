@@ -810,7 +810,7 @@
                         collisionNY /= cnLen;
                     }
                     // Smooth squash tracking from collision tension
-                    var targetSquash = Math.min(collisionTension * 8.0, 0.65);
+                    var targetSquash = Math.min(collisionTension * 8.0, squashAmount);
                     var squashRate = collisionTension > 0.001 ? 12.0 : 5.0;
                     s.squash += (targetSquash - s.squash) * Math.min(squashRate * m, 1);
                     // Smooth squash direction (same rate as squash amount)
@@ -1207,6 +1207,7 @@
                 mouseDownX = 0,
                 mouseDownY = 0,
                 maxSpeed = 20.0,
+                squashAmount = 0.65, // 0 = no flattening, 1 = max flattening
                 wasMovingInput = !1,
                 // Vortex drain state
                 vortexTime = 0,
