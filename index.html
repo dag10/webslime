@@ -636,13 +636,14 @@
             }
             function updateConeWander(e, n) {
                 if (!wanderEnabled) return !1;
+                var _suppressChladni = vortexTime > VORTEX_RAMP_TIME || flingTimer > 0;
                 scrollBlocked.left =
                     scrollBlocked.right =
                     scrollBlocked.up =
                     scrollBlocked.down =
                         0;
                 var o = Math.min(Math.round(5), coneSeeds.length);
-                if (((chladniModeTime += 2 * e), chladniNeedsAssign)) {
+                if (!_suppressChladni && ((chladniModeTime += 2 * e), chladniNeedsAssign)) {
                     for (var t = 0, a = 0, r = 0; r < o; r++)
                         ((t += coneSeeds[r].px), (a += coneSeeds[r].py));
                     var l = generatePattern(chladniModeIdx, o, (t /= o), (a /= o));
@@ -663,13 +664,13 @@
                         f = Math.sqrt(s.vx * s.vx + s.vy * s.vy);
                     f > c && (c = f);
                 }
-                if (chladniModeTime >= CHLADNI_TARGET_DUR + CHLADNI_HOLD / (1 + 100 * c))
+                if (!_suppressChladni && chladniModeTime >= CHLADNI_TARGET_DUR + CHLADNI_HOLD / (1 + 100 * c))
                     return (
                         (chladniModeIdx = (chladniModeIdx + 1) % chladniPatterns.length),
                         (chladniNeedsAssign = !0),
                         !0
                     );
-                if (chladniTargetT < 1) {
+                if (!_suppressChladni && chladniTargetT < 1) {
                     var d = Math.min(chladniModeTime / CHLADNI_TARGET_DUR, 1);
                     for (
                         chladniTargetT = d < 0.5 ? 2 * d * d : 1 - Math.pow(-2 * d + 2, 2) / 2,
@@ -708,10 +709,12 @@
                                     (s.vx += (D / R) * b),
                                     (s.vy += (w / R) * b));
                         }
-                    var E = Math.pow(0.9, 60 * m);
+                    var dampBase = 0.9 + 0.08 * Math.min(flingTimer / VORTEX_FLING_DURATION, 1);
+                    var E = Math.pow(dampBase, 60 * m);
                     ((s.vx *= E), (s.vy *= E));
                     var S = Math.sqrt(s.vx * s.vx + s.vy * s.vy);
-                    S > 0.2 * maxSpeed && ((s.vx = (s.vx / S) * 0.2 * maxSpeed), (s.vy = (s.vy / S) * 0.2 * maxSpeed));
+                    var speedCap = 0.2 * maxSpeed * (1 + 2 * Math.min(flingTimer / VORTEX_FLING_DURATION, 1));
+                    S > speedCap && ((s.vx = (s.vx / S) * speedCap), (s.vy = (s.vy / S) * speedCap));
                     var U = s.px + s.vx * m,
                         y = s.py + s.vy * m,
                         F = 0.225,
@@ -1152,7 +1155,23 @@
                 mouseDownX = 0,
                 mouseDownY = 0,
                 maxSpeed = 20.0,
-                wasMovingInput = !1;
+                wasMovingInput = !1,
+                // Vortex drain state
+                vortexTime = 0,
+                vortexCenterX = 0.5,
+                vortexCenterY = 0.5,
+                vortexAngle = 0,
+                vortexOmega = 0,
+                prevMouseX = 0.5,
+                prevMouseY = 0.5,
+                flingTimer = 0,
+                VORTEX_STILL_THRESH = 0.005,
+                VORTEX_RAMP_TIME = 0.3,
+                VORTEX_MAX_OMEGA = 14.0,
+                VORTEX_MIN_RADIUS = 0.018,
+                VORTEX_MAX_RADIUS = 0.07,
+                VORTEX_FLING_DURATION = 0.6,
+                VORTEX_FLING_BOOST = 3.0;
             (canvas.addEventListener('pointerdown', function (e) {
                 ((mouseDown = !0), canvas.setPointerCapture(e.pointerId));
                 var n = canvas.getBoundingClientRect();
@@ -1190,7 +1209,7 @@
                         'ArrowDown' === e.key && (arrowKeys.down = !1));
                 }));
             var flowUpdateFragSrc =
-                    '#version 300 es\n    precision highp float;\n    in vec2 vUV;\n    uniform sampler2D uFlow;\n    uniform vec2 uTexel;       // 1/W, 1/H\n    const float uDecay = 1.0;\n    uniform float uDiffuse;\n    uniform vec2 uScrollOffset; // current scroll in UV\n    uniform float uVisHalf;    // half visible window in field UV (0.25 for 2x field)\n    uniform vec2 uAspect;      // (1.0, W/H) for aspect-ratio corrected eraser arc\n    uniform float uAspectYX;   // H/W for circular cone splats\n    uniform vec2 uScrollVel;   // scroll velocity in field UV/s (zero when idle)\n    // Cone splats\n    uniform int uConeCount;\n    uniform vec4 uCones[15];   // xy = UV position (field space), zw = velocity\n    uniform float uConeRadius;\n    uniform float uSplatScale;\n    uniform float uMaxSpeed;\n    uniform sampler2D uObs;  // obstacle map (R=height, G=matID)\n    out vec4 fragFlow;\n\n    // Smooth obstacle strength from height (0=open, 1=solid wall)\n    float wallStr(vec2 fuv) {\n        float h = texture(uObs, fuv).r;\n        return smoothstep(0.0, 0.008, h);  // smooth transition over height falloff\n    }\n\n    void main() {\n        float wall = wallStr(vUV);\n\n        vec2 flow = texture(uFlow, vUV).rg;\n\n        // Offscreen distance factor (used for diffusion boost and eraser)\n        vec2 visCenter = uScrollOffset + uVisHalf;\n        vec2 delta = vUV - visCenter;\n        delta = delta - round(delta); // wrap to [-0.5, 0.5]\n        float offDist = length(delta);\n        float offT = clamp((offDist - uVisHalf) / (0.5 - uVisHalf), 0.0, 1.0);\n\n        // 4-neighbor wall-aware diffusion (boosted offscreen for natural blur of old trails)\n        vec2 uvE = vUV + vec2(uTexel.x, 0.0);\n        vec2 uvW = vUV - vec2(uTexel.x, 0.0);\n        vec2 uvN = vUV + vec2(0.0, uTexel.y);\n        vec2 uvS = vUV - vec2(0.0, uTexel.y);\n        float wE = 1.0 - wallStr(uvE);\n        float wW = 1.0 - wallStr(uvW);\n        float wN = 1.0 - wallStr(uvN);\n        float wS = 1.0 - wallStr(uvS);\n        float wSum = wE + wW + wN + wS;\n        vec2 avg;\n        if (wSum > 0.0) {\n            avg = (texture(uFlow, uvE).rg * wE +\n                   texture(uFlow, uvW).rg * wW +\n                   texture(uFlow, uvN).rg * wN +\n                   texture(uFlow, uvS).rg * wS) / wSum;\n        } else {\n            avg = flow;\n        }\n        flow = mix(flow, avg, uDiffuse + offT * 0.3);\n\n        // Decay\n        flow *= uDecay;\n\n        // Cone splats: paint velocity direction onto field (mix = overwrite with edge bleed)\n        // uConeRadius is in window UV; field is 2x window, so * 0.25 makes\n        // the visible trail (~2 sigma on screen) match the debug circle diameter\n        float splatR = uConeRadius * 0.25 * uSplatScale;\n        float sr2 = splatR * splatR;\n        for (int i = 0; i < 15; i++) {\n            if (i >= uConeCount) break;\n            vec2 coneFieldUV = uCones[i].xy;  // already field UV\n            vec2 coneVel = uCones[i].zw;\n            float speed = length(coneVel);\n            if (speed < 0.0001) continue;\n            vec2 dir = coneVel / speed;\n            vec2 d = vUV - coneFieldUV;\n            d = d - round(d);\n            d.y *= uAspectYX;\n            float dist2 = dot(d, d);\n            if (dist2 < sr2 * 9.0) {\n                float g = exp(-dist2 / (2.0 * sr2));\n                flow = mix(flow, dir, g * min(speed * 10.0 / uMaxSpeed, 1.0));\n            }\n        }\n\n\n        // Offscreen clearing: directional eraser arc, only active when moving\n        // Reuses delta and offDist/offT computed above\n        float scrollSpeed = length(uScrollVel);\n        if (scrollSpeed > 0.0001) {\n            float t = offT;\n\n            // Direction: trailing hemisphere behind movement direction (±90°)\n            // Compute angle in aspect-corrected space so degrees match screen appearance\n            // Full strength within ±60°, ramp to zero by ±90°\n            vec2 aspDelta = delta * uAspect;\n            vec2 aspMoveDir = normalize(uScrollVel * uAspect);\n            float aspDist = length(aspDelta);\n            float d = (aspDist > 0.0001) ? dot(aspDelta / aspDist, aspMoveDir) : 0.0;\n            // negD = cos(angle from behind): 1.0 = directly behind, 0.0 = perpendicular\n            float negD = -d;\n            // smoothstep: 0 at ±90° (perpendicular), ramp 90°→60°, 1 within ±60°\n            float angleFactor = smoothstep(0.0, 0.5, negD);\n\n            // Combined: linear distance fade * angle modulation\n            float maxMag = 1.0 - angleFactor * t;\n            float mag = length(flow);\n            if (mag > maxMag) flow = (mag > 0.0001) ? flow / mag * maxMag : vec2(0.0);\n        }\n\n        // Wall attenuation AFTER cone splats (so obstacles always win)\n        flow *= 1.0 - wall;\n\n        fragFlow = vec4(flow, 0.0, 1.0);\n    }',
+                    '#version 300 es\n    precision highp float;\n    in vec2 vUV;\n    uniform sampler2D uFlow;\n    uniform vec2 uTexel;       // 1/W, 1/H\n    const float uDecay = 1.0;\n    uniform float uDiffuse;\n    uniform vec2 uScrollOffset; // current scroll in UV\n    uniform float uVisHalf;    // half visible window in field UV (0.25 for 2x field)\n    uniform vec2 uAspect;      // (1.0, W/H) for aspect-ratio corrected eraser arc\n    uniform float uAspectYX;   // H/W for circular cone splats\n    uniform vec2 uScrollVel;   // scroll velocity in field UV/s (zero when idle)\n    // Cone splats\n    uniform int uConeCount;\n    uniform vec4 uCones[15];   // xy = UV position (field space), zw = velocity\n    uniform float uConeRadius;\n    uniform float uSplatScale;\n    uniform float uMaxSpeed;\n    uniform sampler2D uObs;  // obstacle map (R=height, G=matID)\n    uniform vec2 uVortexPos;\n    uniform float uVortexStr;\n    out vec4 fragFlow;\n\n    // Smooth obstacle strength from height (0=open, 1=solid wall)\n    float wallStr(vec2 fuv) {\n        float h = texture(uObs, fuv).r;\n        return smoothstep(0.0, 0.008, h);  // smooth transition over height falloff\n    }\n\n    void main() {\n        float wall = wallStr(vUV);\n\n        vec2 flow = texture(uFlow, vUV).rg;\n\n        // Offscreen distance factor (used for diffusion boost and eraser)\n        vec2 visCenter = uScrollOffset + uVisHalf;\n        vec2 delta = vUV - visCenter;\n        delta = delta - round(delta); // wrap to [-0.5, 0.5]\n        float offDist = length(delta);\n        float offT = clamp((offDist - uVisHalf) / (0.5 - uVisHalf), 0.0, 1.0);\n\n        // 4-neighbor wall-aware diffusion (boosted offscreen for natural blur of old trails)\n        vec2 uvE = vUV + vec2(uTexel.x, 0.0);\n        vec2 uvW = vUV - vec2(uTexel.x, 0.0);\n        vec2 uvN = vUV + vec2(0.0, uTexel.y);\n        vec2 uvS = vUV - vec2(0.0, uTexel.y);\n        float wE = 1.0 - wallStr(uvE);\n        float wW = 1.0 - wallStr(uvW);\n        float wN = 1.0 - wallStr(uvN);\n        float wS = 1.0 - wallStr(uvS);\n        float wSum = wE + wW + wN + wS;\n        vec2 avg;\n        if (wSum > 0.0) {\n            avg = (texture(uFlow, uvE).rg * wE +\n                   texture(uFlow, uvW).rg * wW +\n                   texture(uFlow, uvN).rg * wN +\n                   texture(uFlow, uvS).rg * wS) / wSum;\n        } else {\n            avg = flow;\n        }\n        flow = mix(flow, avg, uDiffuse + offT * 0.3);\n\n        // Decay\n        flow *= uDecay;\n\n        // Cone splats: paint velocity direction onto field (mix = overwrite with edge bleed)\n        // uConeRadius is in window UV; field is 2x window, so * 0.25 makes\n        // the visible trail (~2 sigma on screen) match the debug circle diameter\n        float splatR = uConeRadius * 0.25 * uSplatScale;\n        float sr2 = splatR * splatR;\n        for (int i = 0; i < 15; i++) {\n            if (i >= uConeCount) break;\n            vec2 coneFieldUV = uCones[i].xy;  // already field UV\n            vec2 coneVel = uCones[i].zw;\n            float speed = length(coneVel);\n            if (speed < 0.0001) continue;\n            vec2 dir = coneVel / speed;\n            vec2 d = vUV - coneFieldUV;\n            d = d - round(d);\n            d.y *= uAspectYX;\n            float dist2 = dot(d, d);\n            if (dist2 < sr2 * 9.0) {\n                float g = exp(-dist2 / (2.0 * sr2));\n                flow = mix(flow, dir, g * min(speed * 10.0 / uMaxSpeed, 1.0));\n            }\n        }\n\n        // Vortex flow splat: tangential flow around vortex center\n        if (uVortexStr > 0.001) {\n            vec2 vd = vUV - uVortexPos;\n            vd = vd - round(vd);\n            vd.y *= uAspectYX;\n            float vDist = length(vd);\n            vec2 tangent = vec2(-vd.y, vd.x);\n            float tLen = length(tangent);\n            if (tLen > 0.0001) {\n                tangent /= tLen;\n                float vortexR = uConeRadius * 3.0;\n                float vr2 = vortexR * vortexR;\n                float g = exp(-vDist * vDist / (2.0 * vr2));\n                vec2 radial = -vd / max(vDist, 0.0001);\n                vec2 spiralDir = tangent * 0.9 + radial * 0.1;\n                spiralDir = normalize(spiralDir);\n                flow = mix(flow, spiralDir, g * uVortexStr);\n            }\n        }\n\n        // Offscreen clearing: directional eraser arc, only active when moving\n        // Reuses delta and offDist/offT computed above\n        float scrollSpeed = length(uScrollVel);\n        if (scrollSpeed > 0.0001) {\n            float t = offT;\n\n            // Direction: trailing hemisphere behind movement direction (±90°)\n            // Compute angle in aspect-corrected space so degrees match screen appearance\n            // Full strength within ±60°, ramp to zero by ±90°\n            vec2 aspDelta = delta * uAspect;\n            vec2 aspMoveDir = normalize(uScrollVel * uAspect);\n            float aspDist = length(aspDelta);\n            float d = (aspDist > 0.0001) ? dot(aspDelta / aspDist, aspMoveDir) : 0.0;\n            // negD = cos(angle from behind): 1.0 = directly behind, 0.0 = perpendicular\n            float negD = -d;\n            // smoothstep: 0 at ±90° (perpendicular), ramp 90°→60°, 1 within ±60°\n            float angleFactor = smoothstep(0.0, 0.5, negD);\n\n            // Combined: linear distance fade * angle modulation\n            float maxMag = 1.0 - angleFactor * t;\n            float mag = length(flow);\n            if (mag > maxMag) flow = (mag > 0.0001) ? flow / mag * maxMag : vec2(0.0);\n        }\n\n        // Wall attenuation AFTER cone splats (so obstacles always win)\n        flow *= 1.0 - wall;\n\n        fragFlow = vec4(flow, 0.0, 1.0);\n    }',
                 flowUpdateProg = linkProg(vertSrc, flowUpdateFragSrc),
                 flowLocs = {
                     flow: gl.getUniformLocation(flowUpdateProg, 'uFlow'),
@@ -1207,6 +1226,8 @@
                     splatScale: gl.getUniformLocation(flowUpdateProg, 'uSplatScale'),
                     maxSpeed: gl.getUniformLocation(flowUpdateProg, 'uMaxSpeed'),
                     obs: gl.getUniformLocation(flowUpdateProg, 'uObs'),
+                    vortexPos: gl.getUniformLocation(flowUpdateProg, 'uVortexPos'),
+                    vortexStr: gl.getUniformLocation(flowUpdateProg, 'uVortexStr'),
                 };
             for (ci = 0; ci < 15; ci++)
                 flowLocs.cones.push(gl.getUniformLocation(flowUpdateProg, 'uCones[' + ci + ']'));
@@ -1389,37 +1410,135 @@
                 ((smoothDt = o), (elapsedTime += o), frameNum++);
                 var t = Math.min(Math.round(5), coneSeeds.length);
                 if (mouseDown) {
+                    // Compute mouse movement this frame
+                    var mouseDx = mouseX - prevMouseX,
+                        mouseDy = mouseY - prevMouseY,
+                        mouseSpeed = Math.sqrt(mouseDx * mouseDx + mouseDy * mouseDy) / Math.max(o, 0.001);
+
+                    // Virtual joystick displacement (existing behavior)
                     var a = mouseX - mouseDownX,
                         r = mouseY - mouseDownY,
                         l = Math.sqrt(a * a + r * r);
-                    if (l > 0.001) {
+
+                    // Determine if mouse is "still": small joystick displacement AND low mouse velocity
+                    var isStill = l < 0.03 && mouseSpeed < 0.5;
+
+                    if (isStill) {
+                        vortexTime += o;
+                    } else {
+                        vortexTime = Math.max(0, vortexTime - o * 3);
+                    }
+
+                    if (vortexTime > VORTEX_RAMP_TIME) {
+                        // --- VORTEX MODE ---
+                        vortexCenterX = 0.5 * mouseX + scrollX;
+                        vortexCenterY = 0.5 * mouseY + scrollY;
+
+                        var vRamp = Math.min((vortexTime - VORTEX_RAMP_TIME) / VORTEX_RAMP_TIME, 1);
+                        var vRampSmooth = vRamp * vRamp * (3 - 2 * vRamp);
+
+                        vortexOmega = VORTEX_MAX_OMEGA * vRampSmooth;
+
+                        var vRadius = VORTEX_MAX_RADIUS - (VORTEX_MAX_RADIUS - VORTEX_MIN_RADIUS) * vRampSmooth;
+
+                        vortexAngle += vortexOmega * o;
+
+                        var coneCount = Math.min(Math.round(5), coneSeeds.length);
+                        for (var vi = 0; vi < coneCount; vi++) {
+                            var coneAngle = vortexAngle + (2 * Math.PI * vi) / coneCount;
+                            var tx = vortexCenterX + vRadius * Math.cos(coneAngle);
+                            var ty = vortexCenterY + vRadius * Math.sin(coneAngle);
+                            if (chladniTargets[vi]) {
+                                var blendRate = Math.min(8 * o * (0.3 + 0.7 * vRampSmooth), 1);
+                                chladniTargets[vi].ux += (tx - chladniTargets[vi].ux) * blendRate;
+                                chladniTargets[vi].uy += (ty - chladniTargets[vi].uy) * blendRate;
+                            }
+                            if (chladniTargetFrom[vi]) {
+                                chladniTargetFrom[vi].ux = chladniTargets[vi].ux;
+                                chladniTargetFrom[vi].uy = chladniTargets[vi].uy;
+                            }
+                            if (chladniTargetTo[vi]) {
+                                chladniTargetTo[vi].ux = chladniTargets[vi].ux;
+                                chladniTargetTo[vi].uy = chladniTargets[vi].uy;
+                            }
+                        }
+                    } else if (l > 0.001) {
                         var i = l * 1.5 * maxSpeed;
                         shiftAllTargets(a / l * i * o, r / l * i * o);
                     }
+                } else {
+                    if (flingTimer > 0) {
+                        flingTimer -= o;
+                    }
+                    vortexTime = Math.max(0, vortexTime - o * 5);
+                    vortexOmega = 0;
                 }
+                prevMouseX = mouseX;
+                prevMouseY = mouseY;
                 var s = 0.075 * ((arrowKeys.right ? 1 : 0) - (arrowKeys.left ? 1 : 0)) * o,
                     f = 0.075 * ((arrowKeys.up ? 1 : 0) - (arrowKeys.down ? 1 : 0)) * o,
                     d = mouseDown || 0 !== s || 0 !== f;
                 if (wasMovingInput && !d) {
-                    var u = [],
-                        g = [];
-                    for (c = 0; c < t; c++) (u.push(coneSeeds[c].px), g.push(coneSeeds[c].py));
-                    (u.sort(function (e, n) {
-                        return e - n;
-                    }),
-                        g.sort(function (e, n) {
+                    if (vortexTime > VORTEX_RAMP_TIME) {
+                        // FLING: apply tangential velocity boost to each cone
+                        flingTimer = VORTEX_FLING_DURATION;
+                        var coneCount = Math.min(Math.round(5), coneSeeds.length);
+                        for (var fi = 0; fi < coneCount; fi++) {
+                            var cone = coneSeeds[fi];
+                            var rx = cone.px - vortexCenterX;
+                            var ry = cone.py - vortexCenterY;
+                            var rLen = Math.sqrt(rx * rx + ry * ry);
+                            if (rLen > 0.0001) {
+                                var sign = vortexOmega >= 0 ? 1 : -1;
+                                var tangX = -ry / rLen * sign;
+                                var tangY = rx / rLen * sign;
+                                var flingSpeed = Math.abs(vortexOmega) * rLen * VORTEX_FLING_BOOST;
+                                flingSpeed = Math.min(flingSpeed, 0.4 * maxSpeed);
+                                cone.vx += tangX * flingSpeed;
+                                cone.vy += tangY * flingSpeed;
+                            }
+                        }
+                        // Set targets to current cone positions (don't fight the fling)
+                        for (var fi = 0; fi < coneCount; fi++) {
+                            var cone = coneSeeds[fi];
+                            if (chladniTargets[fi]) {
+                                chladniTargets[fi].ux = cone.px;
+                                chladniTargets[fi].uy = cone.py;
+                            }
+                            if (chladniTargetFrom[fi]) {
+                                chladniTargetFrom[fi].ux = cone.px;
+                                chladniTargetFrom[fi].uy = cone.py;
+                            }
+                            if (chladniTargetTo[fi]) {
+                                chladniTargetTo[fi].ux = cone.px;
+                                chladniTargetTo[fi].uy = cone.py;
+                            }
+                        }
+                        chladniTargetT = 1;
+                        vortexTime = 0;
+                        vortexOmega = 0;
+                    } else {
+                        // Normal release: existing snap-to-median code
+                        var u = [],
+                            g = [];
+                        for (c = 0; c < t; c++) (u.push(coneSeeds[c].px), g.push(coneSeeds[c].py));
+                        (u.sort(function (e, n) {
                             return e - n;
-                        }));
-                    var p = Math.floor(t / 2),
-                        h = u[p],
-                        m = g[p];
-                    for (l = 0, i = 0, c = 0; c < t; c++)
-                        (x = chladniTargets[c]) && ((l += x.ux), (i += x.uy));
-                    for (shiftAllTargets(h - (l /= t), m - (i /= t)), c = 0; c < t; c++)
-                        (x = chladniTargets[c]) &&
-                            ((chladniTargetFrom[c] = { ux: x.ux, uy: x.uy }),
-                            (chladniTargetTo[c] = { ux: x.ux, uy: x.uy }));
-                    chladniTargetT = 1;
+                        }),
+                            g.sort(function (e, n) {
+                                return e - n;
+                            }));
+                        var p = Math.floor(t / 2),
+                            h = u[p],
+                            m = g[p];
+                        for (l = 0, i = 0, c = 0; c < t; c++)
+                            (x = chladniTargets[c]) && ((l += x.ux), (i += x.uy));
+                        for (shiftAllTargets(h - (l /= t), m - (i /= t)), c = 0; c < t; c++)
+                            (x = chladniTargets[c]) &&
+                                ((chladniTargetFrom[c] = { ux: x.ux, uy: x.uy }),
+                                (chladniTargetTo[c] = { ux: x.ux, uy: x.uy }));
+                        chladniTargetT = 1;
+                    }
                 }
                 if (!mouseDown && (0 !== s || 0 !== f))
                     if (wasMovingInput) shiftAllTargets(s, f);
@@ -1556,6 +1675,11 @@
                     gl.uniform1i(flowLocs.coneCount, t),
                     gl.uniform1f(flowLocs.coneRadius, coneRad),
                     gl.uniform1f(flowLocs.maxSpeed, maxSpeed));
+                // Vortex flow uniforms
+                var vortexStr = vortexTime > VORTEX_RAMP_TIME ?
+                    Math.min((vortexTime - VORTEX_RAMP_TIME) / VORTEX_RAMP_TIME, 1) * 0.8 : 0;
+                gl.uniform2f(flowLocs.vortexPos, vortexCenterX, vortexCenterY);
+                gl.uniform1f(flowLocs.vortexStr, vortexStr);
                 var N = elapsedTime < 1 ? 4 : 4 - 3 * Math.min(elapsedTime - 1, 1);
                 for (gl.uniform1f(flowLocs.splatScale, N), c = 0; c < t; c++)
                     gl.uniform4f(
@@ -1810,6 +1934,8 @@
                             gl.uniform2f(flowLocs.aspect, 1, W / H),
                             gl.uniform1f(flowLocs.aspectYX, H / W),
                             gl.uniform2f(flowLocs.scrollVel, 0, 0),
+                            gl.uniform2f(flowLocs.vortexPos, 0.5, 0.5),
+                            gl.uniform1f(flowLocs.vortexStr, 0),
                             gl.uniform1i(flowLocs.coneCount, a),
                             gl.uniform1f(flowLocs.coneRadius, coneRad),
                             gl.uniform1f(flowLocs.splatScale, 4),
